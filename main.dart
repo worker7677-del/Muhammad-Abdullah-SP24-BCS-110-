@@ -1,460 +1,5 @@
 import 'package:flutter/material.dart';
 
-// ==================== ENUMS ====================
-enum GradingSystem { scale4, scale5, percentage, custom }
-enum RetakePolicy { bestAttempt, latestAttempt, averageAttempt, manual }
-enum CourseCategory { core, elective, lab, thesis }
-enum RoundingMode { standard, bankers }
-
-// ==================== MODELS ====================
-class GradeMapping {
-  final double minMark;
-  final double maxMark;
-  final String letterGrade;
-  final double gradePoint;
-
-  GradeMapping({
-    required this.minMark,
-    required this.maxMark,
-    required this.letterGrade,
-    required this.gradePoint,
-  });
-}
-
-class Course {
-  String name;
-  double creditHours;
-  double rawMarks;
-  String letterGrade;
-  double gradePoint;
-  int attemptNumber;
-  bool isRetake;
-  CourseCategory category;
-  int semesterNumber;
-  double weightMultiplier;
-
-  Course({
-    required this.name,
-    required this.creditHours,
-    required this.rawMarks,
-    this.letterGrade = '',
-    this.gradePoint = 0.0,
-    this.attemptNumber = 1,
-    this.isRetake = false,
-    required this.category,
-    required this.semesterNumber,
-    this.weightMultiplier = 1.0,
-  });
-
-  Course copy() => Course(
-    name: name,
-    creditHours: creditHours,
-    rawMarks: rawMarks,
-    letterGrade: letterGrade,
-    gradePoint: gradePoint,
-    attemptNumber: attemptNumber,
-    isRetake: isRetake,
-    category: category,
-    semesterNumber: semesterNumber,
-    weightMultiplier: weightMultiplier,
-  );
-}
-
-class Semester {
-  int number;
-  List<Course> courses;
-
-  Semester({required this.number, this.courses = const []});
-}
-
-// ==================== GPA ENGINE ====================
-class GPAEngine {
-  GradingSystem currentSystem = GradingSystem.scale4;
-  RetakePolicy retakePolicy = RetakePolicy.bestAttempt;
-  RoundingMode roundingMode = RoundingMode.standard;
-
-  // Grade mappings for different systems
-  final Map<GradingSystem, List<GradeMapping>> gradeMappings = {
-    GradingSystem.scale4: [
-      GradeMapping(minMark: 85, maxMark: 100, letterGrade: 'A', gradePoint: 4.0),
-      GradeMapping(minMark: 80, maxMark: 84.99, letterGrade: 'B+', gradePoint: 3.66),
-      GradeMapping(minMark: 75, maxMark: 79.99, letterGrade: 'B', gradePoint: 3.33),
-      GradeMapping(minMark: 70, maxMark: 74.99, letterGrade: 'B-', gradePoint: 3.0),
-      GradeMapping(minMark: 65, maxMark: 69.99, letterGrade: 'C+', gradePoint: 2.66),
-      GradeMapping(minMark: 60, maxMark: 64.99, letterGrade: 'C', gradePoint: 2.33),
-      GradeMapping(minMark: 57, maxMark: 59.99, letterGrade: 'C-', gradePoint: 2.0),
-      GradeMapping(minMark: 55, maxMark: 56.99, letterGrade: 'D+', gradePoint: 1.66),
-      GradeMapping(minMark: 52, maxMark: 54.99, letterGrade: 'D', gradePoint: 1.33),
-      GradeMapping(minMark: 50, maxMark: 51.99, letterGrade: 'D-', gradePoint: 1.0),
-      GradeMapping(minMark: 0, maxMark: 49.99, letterGrade: 'F', gradePoint: 0.0),
-    ],
-    GradingSystem.scale5: [
-      GradeMapping(minMark: 90, maxMark: 100, letterGrade: 'A', gradePoint: 5.0),
-      GradeMapping(minMark: 80, maxMark: 89.99, letterGrade: 'B', gradePoint: 4.0),
-      GradeMapping(minMark: 70, maxMark: 79.99, letterGrade: 'C', gradePoint: 3.0),
-      GradeMapping(minMark: 60, maxMark: 69.99, letterGrade: 'D', gradePoint: 2.0),
-      GradeMapping(minMark: 50, maxMark: 59.99, letterGrade: 'E', gradePoint: 1.0),
-      GradeMapping(minMark: 0, maxMark: 49.99, letterGrade: 'F', gradePoint: 0.0),
-    ],
-    GradingSystem.percentage: [
-      GradeMapping(minMark: 0, maxMark: 100, letterGrade: '%', gradePoint: 0.0),
-    ],
-  };
-
-  double safeDivide(double a, double b) {
-    if (b.abs() < 1e-10) return 0.0;
-    return a / b;
-  }
-
-  double clampGPA(double gpa, GradingSystem system) {
-    double maxGPA = system == GradingSystem.scale4 ? 4.0 :
-    system == GradingSystem.scale5 ? 5.0 : 100.0;
-    return gpa.clamp(0.0, maxGPA);
-  }
-
-  void convertMarksToGrade(Course course) {
-    final mappings = gradeMappings[currentSystem] ?? [];
-
-    if (currentSystem == GradingSystem.percentage) {
-      course.letterGrade = '${course.rawMarks.toStringAsFixed(1)}%';
-      course.gradePoint = course.rawMarks;
-      return;
-    }
-
-    for (var mapping in mappings) {
-      final adjustedMarks = course.rawMarks;
-      if (adjustedMarks >= mapping.minMark && adjustedMarks <= mapping.maxMark) {
-        course.letterGrade = mapping.letterGrade;
-        course.gradePoint = mapping.gradePoint;
-        return;
-      }
-    }
-    
-    if (course.rawMarks >= 100) {
-      course.letterGrade = mappings.first.letterGrade;
-      course.gradePoint = mappings.first.gradePoint;
-    } else {
-      course.letterGrade = mappings.last.letterGrade;
-      course.gradePoint = mappings.last.gradePoint;
-    }
-  }
-
-  Map<int, List<Course>> resolveRetakes(List<Course> allCourses) {
-    final Map<String, List<Course>> courseGroups = {};
-    final Map<int, List<Course>> resolvedCourses = {};
-
-    for (var course in allCourses) {
-      if (!courseGroups.containsKey(course.name)) {
-        courseGroups[course.name] = [];
-      }
-      courseGroups[course.name]!.add(course);
-    }
-
-    for (var entry in courseGroups.entries) {
-      final courses = entry.value;
-      if (courses.length == 1) {
-        resolvedCourses.putIfAbsent(courses.first.semesterNumber, () => [])
-            .add(courses.first);
-      } else {
-        courses.sort((a, b) => a.attemptNumber.compareTo(b.attemptNumber));
-
-        switch (retakePolicy) {
-          case RetakePolicy.bestAttempt:
-            courses.sort((a, b) => b.gradePoint.compareTo(a.gradePoint));
-            final best = courses.first;
-            best.isRetake = true;
-            resolvedCourses.putIfAbsent(best.semesterNumber, () => []).add(best);
-            break;
-
-          case RetakePolicy.latestAttempt:
-            final latest = courses.last;
-            latest.isRetake = true;
-            resolvedCourses.putIfAbsent(latest.semesterNumber, () => []).add(latest);
-            break;
-
-          case RetakePolicy.averageAttempt:
-            double avgGrade = courses.map((c) => c.gradePoint).reduce((a, b) => a + b) / courses.length;
-            final closest = courses.reduce((a, b) =>
-            (a.gradePoint - avgGrade).abs() < (b.gradePoint - avgGrade).abs() ? a : b);
-            closest.isRetake = true;
-            resolvedCourses.putIfAbsent(closest.semesterNumber, () => []).add(closest);
-            break;
-
-          case RetakePolicy.manual:
-            for (var course in courses) {
-              resolvedCourses.putIfAbsent(course.semesterNumber, () => []).add(course);
-            }
-            break;
-        }
-      }
-    }
-
-    return resolvedCourses;
-  }
-
-  double calculateSGPA(int semesterNumber, List<Course> allCourses) {
-    final resolved = resolveRetakes(allCourses);
-    final semesterCourses = resolved[semesterNumber] ?? [];
-
-    double totalWeightedPoints = 0.0;
-    double totalCredits = 0.0;
-
-    for (var course in semesterCourses) {
-      final weightedPoints = course.creditHours * course.gradePoint * course.weightMultiplier;
-      totalWeightedPoints += weightedPoints;
-      totalCredits += course.creditHours;
-    }
-
-    return safeDivide(totalWeightedPoints, totalCredits);
-  }
-
-  double calculateCGPA(List<Course> allCourses) {
-    final resolved = resolveRetakes(allCourses);
-    final semesterMap = <int, List<Course>>{};
-
-    resolved.forEach((semester, courses) {
-      semesterMap[semester] = courses;
-    });
-
-    double totalWeightedPoints = 0.0;
-    double totalCredits = 0.0;
-
-    for (var semester in semesterMap.keys) {
-      final sgpa = calculateSGPA(semester, allCourses);
-      final semesterCredits = semesterMap[semester]!.fold(0.0, (sum, c) => sum + c.creditHours);
-
-      totalWeightedPoints += sgpa * semesterCredits;
-      totalCredits += semesterCredits;
-    }
-
-    final cgpa = safeDivide(totalWeightedPoints, totalCredits);
-    return clampGPA(cgpa, currentSystem);
-  }
-}
-
-// ==================== PREDICTION ENGINE ====================
-class PredictionEngine {
-  final GPAEngine gpaEngine;
-
-  PredictionEngine(this.gpaEngine);
-
-  double calculateRequiredGPA({
-    required double currentCGPA,
-    required double completedCredits,
-    required double remainingCredits,
-    required double targetCGPA,
-  }) {
-    final totalCredits = completedCredits + remainingCredits;
-    final totalPoints = targetCGPA * totalCredits;
-    final currentPoints = currentCGPA * completedCredits;
-    final requiredPoints = totalPoints - currentPoints;
-
-    return gpaEngine.safeDivide(requiredPoints, remainingCredits);
-  }
-
-  double simulateWhatIf({
-    required List<Course> currentCourses,
-    required List<Course> hypotheticalCourses,
-  }) {
-    final allCourses = [...currentCourses, ...hypotheticalCourses];
-    return gpaEngine.calculateCGPA(allCourses);
-  }
-
-  Map<String, double> predictGraduation({
-    required List<Course> allCourses,
-    required int remainingCredits,
-    required double currentCGPA,
-  }) {
-    final semesters = <int, double>{};
-    for (var course in allCourses) {
-      if (!semesters.containsKey(course.semesterNumber)) {
-        semesters[course.semesterNumber] = gpaEngine.calculateSGPA(course.semesterNumber, allCourses);
-      }
-    }
-
-    final semesterList = semesters.entries.toList()
-      ..sort((a, b) => a.key.compareTo(b.key));
-
-    double avgTrend = 0.0;
-    if (semesterList.length >= 2) {
-      final first = semesterList.first.value;
-      final last = semesterList.last.value;
-      avgTrend = (last - first) / semesterList.length;
-    }
-
-    double conservativeGPA = currentCGPA;
-    double moderateGPA = currentCGPA + avgTrend;
-    double optimisticGPA = currentCGPA + (avgTrend * 1.5);
-
-    final totalCredits = allCourses.fold(0.0, (sum, c) => sum + c.creditHours) + remainingCredits;
-
-    return {
-      'conservative': gpaEngine.clampGPA(
-          (currentCGPA * (totalCredits - remainingCredits) + conservativeGPA * remainingCredits) / totalCredits,
-          gpaEngine.currentSystem
-      ),
-      'moderate': gpaEngine.clampGPA(
-          (currentCGPA * (totalCredits - remainingCredits) + moderateGPA * remainingCredits) / totalCredits,
-          gpaEngine.currentSystem
-      ),
-      'optimistic': gpaEngine.clampGPA(
-          (currentCGPA * (totalCredits - remainingCredits) + optimisticGPA * remainingCredits) / totalCredits,
-          gpaEngine.currentSystem
-      ),
-    };
-  }
-}
-
-// ==================== ANALYTICS ENGINE ====================
-class AnalyticsEngine {
-  final GPAEngine gpaEngine;
-
-  AnalyticsEngine(this.gpaEngine);
-
-  double calculateGPAGrowthRate(List<Course> allCourses) {
-    final semesters = <int, double>{};
-    for (var course in allCourses) {
-      if (!semesters.containsKey(course.semesterNumber)) {
-        semesters[course.semesterNumber] = gpaEngine.calculateSGPA(course.semesterNumber, allCourses);
-      }
-    }
-
-    final semesterList = semesters.entries.toList()
-      ..sort((a, b) => a.key.compareTo(b.key));
-
-    if (semesterList.length < 2) return 0.0;
-
-    double totalGrowth = 0.0;
-    for (int i = 1; i < semesterList.length; i++) {
-      totalGrowth += semesterList[i].value - semesterList[i - 1].value;
-    }
-
-    return totalGrowth / (semesterList.length - 1);
-  }
-
-  bool isOnProbation(List<Course> allCourses) {
-    final cgpa = gpaEngine.calculateCGPA(allCourses);
-    final threshold = gpaEngine.currentSystem == GradingSystem.scale4 ? 2.0 :
-    gpaEngine.currentSystem == GradingSystem.scale5 ? 2.5 : 60.0;
-    return cgpa < threshold;
-  }
-
-  bool isCreditOverload(List<Course> semesterCourses) {
-    final totalCredits = semesterCourses.fold(0.0, (sum, c) => sum + c.creditHours);
-    return totalCredits > 18.0;
-  }
-
-  double calculatePerformanceHeatmapScore(Course course) {
-    double baseScore = course.gradePoint /
-        (gpaEngine.currentSystem == GradingSystem.scale4 ? 4.0 : 5.0);
-
-    double categoryMultiplier = course.category == CourseCategory.core ? 1.0 :
-    course.category == CourseCategory.elective ? 1.2 :
-    course.category == CourseCategory.lab ? 0.9 : 1.1;
-
-    double creditMultiplier = 1.0 + (course.creditHours - 3.0) * 0.1;
-
-    return baseScore * categoryMultiplier * creditMultiplier;
-  }
-}
-
-// ==================== MAIN APP STATE ====================
-class CGPAManager extends ChangeNotifier {
-  final GPAEngine gpaEngine = GPAEngine();
-  late final PredictionEngine predictionEngine;
-  late final AnalyticsEngine analyticsEngine;
-
-  List<Course> courses = [];
-  List<Semester> semesters = [];
-
-  double targetCGPA = 0.0;
-  int remainingCredits = 0;
-  List<Course> hypotheticalCourses = [];
-
-  CGPAManager() {
-    predictionEngine = PredictionEngine(gpaEngine);
-    analyticsEngine = AnalyticsEngine(gpaEngine);
-    _initializeSampleData();
-  }
-
-  void _initializeSampleData() {
-    courses = [
-      Course(name: 'Mathematics I', creditHours: 3, rawMarks: 85.5, category: CourseCategory.core, semesterNumber: 1),
-      Course(name: 'Physics', creditHours: 4, rawMarks: 78.3, category: CourseCategory.core, semesterNumber: 1),
-      Course(name: 'Programming Lab', creditHours: 2, rawMarks: 92.0, category: CourseCategory.lab, semesterNumber: 1),
-      Course(name: 'Mathematics II', creditHours: 3, rawMarks: 88.0, category: CourseCategory.core, semesterNumber: 2),
-      Course(name: 'Data Structures', creditHours: 4, rawMarks: 82.5, category: CourseCategory.core, semesterNumber: 2),
-    ];
-
-    for (var course in courses) {
-      gpaEngine.convertMarksToGrade(course);
-    }
-
-    _groupCoursesBySemester();
-    notifyListeners();
-  }
-
-  void _groupCoursesBySemester() {
-    final Map<int, List<Course>> semesterMap = {};
-    for (var course in courses) {
-      semesterMap.putIfAbsent(course.semesterNumber, () => []).add(course);
-    }
-
-    semesters = semesterMap.entries
-        .map((e) => Semester(number: e.key, courses: e.value))
-        .toList()
-      ..sort((a, b) => a.number.compareTo(b.number));
-  }
-
-  void addCourse(Course course) {
-    gpaEngine.convertMarksToGrade(course);
-    courses.add(course);
-    _groupCoursesBySemester();
-    notifyListeners();
-  }
-
-  void updateCourse(int index, Course course) {
-    if (index >= 0 && index < courses.length) {
-      gpaEngine.convertMarksToGrade(course);
-      courses[index] = course;
-      _groupCoursesBySemester();
-      notifyListeners();
-    }
-  }
-
-  void deleteCourse(int index) {
-    if (index >= 0 && index < courses.length) {
-      courses.removeAt(index);
-      _groupCoursesBySemester();
-      notifyListeners();
-    }
-  }
-
-  void deleteSemester(int semesterNumber) {
-    courses.removeWhere((course) => course.semesterNumber == semesterNumber);
-    _groupCoursesBySemester();
-    notifyListeners();
-  }
-
-  void setGradingSystem(GradingSystem system) {
-    gpaEngine.currentSystem = system;
-    for (var course in courses) {
-      gpaEngine.convertMarksToGrade(course);
-    }
-    notifyListeners();
-  }
-
-  void setRetakePolicy(RetakePolicy policy) {
-    gpaEngine.retakePolicy = policy;
-    notifyListeners();
-  }
-
-  double get currentCGPA => gpaEngine.calculateCGPA(courses);
-
-  double getSGPA(int semesterNumber) => gpaEngine.calculateSGPA(semesterNumber, courses);
-}
-
-// ==================== UI WIDGETS ====================
 void main() {
   runApp(const MyApp());
 }
@@ -465,763 +10,1103 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      title: 'CV App',
       debugShowCheckedModeBanner: false,
-      title: 'CGPA Pro Master',
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF0F172A), // Modern Slate Navy
-          primary: const Color(0xFF3B82F6), // Vivid Blue
-          secondary: const Color(0xFF10B981), // Emerald Green
-          surface: Colors.white,
+          seedColor: Colors.blue,
           brightness: Brightness.light,
         ),
         useMaterial3: true,
-        fontFamily: 'Roboto',
-        cardTheme: CardThemeData(
-          elevation: 0,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(24),
-            side: BorderSide(color: Colors.grey.withValues(alpha: 0.1)),
-          ),
-        ),
-        appBarTheme: const AppBarTheme(
-          centerTitle: true,
-          backgroundColor: Colors.transparent,
-          elevation: 0,
-          titleTextStyle: TextStyle(
-            color: Color(0xFF0F172A),
-            fontSize: 20,
-            fontWeight: FontWeight.w900,
-            letterSpacing: 1.2,
-          ),
-        ),
+        fontFamily: 'Poppins',
       ),
-      home: const CGPAHomePage(),
+      home: const MyHomePage(title: 'Abdullah CV App'),
     );
   }
 }
 
-class CGPAHomePage extends StatefulWidget {
-  const CGPAHomePage({super.key});
+class MyHomePage extends StatefulWidget {
+  const MyHomePage({super.key, required this.title});
+
+  final String title;
 
   @override
-  State<CGPAHomePage> createState() => _CGPAHomePageState();
+  State<MyHomePage> createState() => _MyHomePageState();
 }
 
-class _CGPAHomePageState extends State<CGPAHomePage> with SingleTickerProviderStateMixin {
-  late CGPAManager manager;
+class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
+  bool _isProfessional = true;
+  late AnimationController _animationController;
+  late Animation<double> _fadeAnimation;
+  late Animation<Offset> _slideAnimation;
+
+  // For tab switching animation
   late TabController _tabController;
+
+  // For profile image animation
+  bool _isImageHovered = false;
 
   @override
   void initState() {
     super.initState();
-    manager = CGPAManager();
-    _tabController = TabController(length: 4, vsync: this);
+    _animationController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 800),
+    );
+
+    _fadeAnimation = CurvedAnimation(
+      parent: _animationController,
+      curve: Curves.easeInOut,
+    );
+
+    _slideAnimation = Tween<Offset>(
+      begin: const Offset(0.5, 0),
+      end: Offset.zero,
+    ).animate(CurvedAnimation(
+      parent: _animationController,
+      curve: Curves.easeOutCubic,
+    ));
+
+    _tabController = TabController(length: 2, vsync: this);
+    _tabController.addListener(() {
+      if (_tabController.indexIsChanging) {
+        setState(() {
+          _isProfessional = _tabController.index == 0;
+        });
+        _animationController.reset();
+        _animationController.forward();
+      }
+    });
+
+    _animationController.forward();
   }
 
   @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-
-    return Scaffold(
-      backgroundColor: const Color(0xFFF8FAFC), // Very light slate background
-      appBar: AppBar(
-        title: const Text('CGPA Master Pro'),
-        actions: [
-          IconButton(
-            icon: Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: colors.primary.withValues(alpha: 0.1),
-                shape: BoxShape.circle,
-              ),
-              child: Icon(Icons.settings_rounded, color: colors.primary, size: 20),
-            ),
-            onPressed: () => _showSettingsDialog(colors),
-          ),
-          const SizedBox(width: 8),
-        ],
-        bottom: TabBar(
-          controller: _tabController,
-          isScrollable: true,
-          labelColor: colors.primary,
-          unselectedLabelColor: Colors.blueGrey.shade400,
-          indicatorColor: colors.primary,
-          indicatorWeight: 4,
-          indicatorSize: TabBarIndicatorSize.label,
-          dividerColor: Colors.transparent,
-          tabs: const [
-            Tab(text: 'Dashboard', icon: Icon(Icons.auto_graph_rounded, size: 20)),
-            Tab(text: 'Courses', icon: Icon(Icons.school_rounded, size: 20)),
-            Tab(text: 'Predictor', icon: Icon(Icons.query_stats_rounded, size: 20)),
-            Tab(text: 'Analytics', icon: Icon(Icons.analytics_rounded, size: 20)),
-          ],
-        ),
-      ),
-      body: TabBarView(
-        controller: _tabController,
-        children: [
-          _buildDashboard(colors),
-          _buildCoursesTab(colors),
-          _buildPredictorTab(colors),
-          _buildAnalyticsTab(colors),
-        ],
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _showAddCourseDialog(),
-        icon: const Icon(Icons.add_rounded),
-        label: const Text('Add Subject'),
-        backgroundColor: colors.primary,
-        foregroundColor: Colors.white,
-        elevation: 4,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      ),
-    );
+  void dispose() {
+    _animationController.dispose();
+    _tabController.dispose();
+    super.dispose();
   }
 
-  void _showSettingsDialog(ColorScheme colors) {
-    showDialog(
-      context: context,
-      builder: (context) => ListenableBuilder(
-        listenable: manager,
-        builder: (context, _) => AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
-          title: const Text('Academic Settings', style: TextStyle(fontWeight: FontWeight.w900)),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              DropdownButtonFormField<GradingSystem>(
-                initialValue: manager.gpaEngine.currentSystem,
-                decoration: InputDecoration(
-                  labelText: 'Grading System',
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                ),
-                items: GradingSystem.values.map((s) => DropdownMenuItem(value: s, child: Text(s.name.toUpperCase()))).toList(),
-                onChanged: (v) => manager.setGradingSystem(v!),
-              ),
-              const SizedBox(height: 16),
-              DropdownButtonFormField<RetakePolicy>(
-                initialValue: manager.gpaEngine.retakePolicy,
-                decoration: InputDecoration(
-                  labelText: 'Retake Policy',
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                ),
-                items: RetakePolicy.values.map((p) => DropdownMenuItem(value: p, child: Text(p.name.toUpperCase()))).toList(),
-                onChanged: (v) => manager.setRetakePolicy(v!),
-              ),
+  // Professional CV Data
+  final Map<String, dynamic> professionalData = {
+    'name': 'Muhammad Abdullah',
+    'title': 'Senior Flutter Developer',
+    'email': 'abdulah@gmail.com',
+    'phone': '+92 302 123-4567',
+    'location': 'Vehari, Pakistan',
+    'summary': 'Experienced Flutter developer with 1+ years of mobile app development. Passionate about creating beautiful and performant cross-platform applications.',
+    'experience': [
+      {
+        'company': 'Tech Solutions Inc.',
+        'position': 'Senior Flutter Developer',
+        'period': '2021 - Present',
+        'description': 'Leading mobile app development team, implementing clean architecture and state management solutions.',
+        'achievements': [
+          'Developed 5+ production apps',
+          'Reduced app size by 30%',
+          'Mentored 3 junior developers'
+        ]
+      },
+      {
+        'company': 'MobileFirst Apps',
+        'position': 'Flutter Developer',
+        'period': '2019 - 2021',
+        'description': 'Developed and maintained multiple Flutter applications for various clients.',
+        'achievements': [
+          'Built 10+ cross-platform apps',
+          'Implemented CI/CD pipeline',
+          'Achieved 4.8+ app store rating'
+        ]
+      },
+    ],
+    'education': [
+      {
+        'degree': 'B.S. Computer Science',
+        'institution': 'COMSATS University',
+        'year': '2019',
+        'grade': '3.8 GPA'
+      },
+    ],
+    'skills': [
+      {'name': 'Flutter', 'level': 0.9},
+      {'name': 'Dart', 'level': 0.85},
+      {'name': 'Firebase', 'level': 0.8},
+      {'name': 'REST API', 'level': 0.85},
+      {'name': 'Git', 'level': 0.9},
+      {'name': 'UI/UX Design', 'level': 0.75},
+    ],
+    'languages': [
+      {'name': 'English', 'level': 'Native', 'proficiency': 1.0},
+      {'name': 'Spanish', 'level': 'Intermediate', 'proficiency': 0.6},
+      {'name': 'Urdu', 'level': 'Native', 'proficiency': 1.0},
+    ],
+    'certifications': [
+      'Google Flutter Certified',
+      'Firebase Essentials',
+      'UI/UX Design Professional',
+    ]
+  };
+
+  // Personal CV Data
+  final Map<String, dynamic> personalData = {
+    'name': 'Muhammad Abdullah',
+    'age': '22',
+    'birthday': 'March 15, 2004',
+    'nationality': 'Pakistan',
+    'hobbies': [
+      {'icon': Icons.sports_esports, 'name': 'Playing Games', 'description': 'Strategy & RPG games'},
+      {'icon': Icons.directions_bike, 'name': 'Cycling', 'description': 'Weekend rider'},
+      {'icon': Icons.photo_camera, 'name': 'Photography', 'description': 'Nature & portrait'},
+      {'icon': Icons.book, 'name': 'Reading', 'description': 'Tech & fiction'},
+      {'icon': Icons.fitness_center, 'name': 'Gym', 'description': '5x per week'},
+    ],
+    'interests': [
+      {'icon': Icons.travel_explore, 'name': 'Traveling', 'description': 'Visited 5 countries', 'color': Colors.amber},
+      {'icon': Icons.sports_soccer, 'name': 'Football', 'description': 'Play every weekend', 'color': Colors.green},
+      {'icon': Icons.volunteer_activism, 'name': 'Volunteering', 'description': 'Animal shelter', 'color': Colors.purple},
+      {'icon': Icons.music_note, 'name': 'Music', 'description': 'Rock & Pop', 'color': Colors.red},
+    ],
+    'favorites': {
+      'food': 'Pizza',
+      'color': 'Blue',
+      'movie': 'Inception',
+      'book': 'The Alchemist',
+      'artist': 'Coldplay',
+    },
+    'personality': ['Creative', 'Detail-oriented', 'Team player', 'Problem solver', 'Quick learner'],
+    'quote': 'The only way to do great work is to love what you do.',
+    'social': [
+      {'icon': Icons.facebook, 'link': 'facebook.com/abdullah', 'color': Colors.blue},
+      {'icon': Icons.alternate_email, 'link': '@abdullah_dev', 'color': Colors.lightBlue},
+      {'icon': Icons.link, 'link': 'linkedin.com/in/abdullah', 'color': Colors.blue.shade900},
+      {'icon': Icons.code, 'link': 'github.com/abdullah', 'color': Colors.black},
+    ],
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              Colors.blue.shade50,
+              Colors.white,
+              Colors.purple.shade50,
             ],
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: Text('Done', style: TextStyle(color: colors.primary, fontWeight: FontWeight.bold)),
-            )
-          ],
         ),
-      ),
-    );
-  }
-
-  Widget _buildDashboard(ColorScheme colors) {
-    return ListenableBuilder(
-      listenable: manager,
-      builder: (context, _) {
-        final gpa = manager.currentCGPA;
-
-        return SingleChildScrollView(
-          padding: const EdgeInsets.all(20),
+        child: SafeArea(
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Main Score Card
+              // Animated Header
+              _buildAnimatedHeader(),
+
+              // Custom Tab Bar
               Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(32),
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [colors.primary, const Color(0xFF6366F1)], // Blue to Indigo
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                  ),
-                  borderRadius: BorderRadius.circular(32),
-                  boxShadow: [
-                    BoxShadow(
-                      color: colors.primary.withValues(alpha: 0.25),
-                      blurRadius: 24,
-                      offset: const Offset(0, 12),
-                    ),
-                  ],
-                ),
-                child: Column(
-                  children: [
-                    const Text('OVERALL CGPA', style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w900, letterSpacing: 2.5)),
-                    const SizedBox(height: 12),
-                    Text(
-                      gpa.toStringAsFixed(2),
-                      style: const TextStyle(color: Colors.white, fontSize: 80, fontWeight: FontWeight.w900, letterSpacing: -2),
-                    ),
-                    const SizedBox(height: 20),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-                      decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(100)),
-                      child: Text(
-                        _getGPAFeedback(gpa),
-                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 15),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-
-              const SizedBox(height: 32),
-              
-              Row(
-                children: [
-                  _buildStatTile('Total Credits', manager.courses.fold(0.0, (sum, c) => sum + c.creditHours).toString(), Icons.bolt_rounded, const Color(0xFFF59E0B), colors),
-                  const SizedBox(width: 16),
-                  _buildStatTile('Semesters', manager.semesters.length.toString(), Icons.calendar_today_rounded, const Color(0xFF8B5CF6), colors),
-                ],
-              ),
-
-              const SizedBox(height: 32),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  const Text('Academic Journey', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900, color: Color(0xFF1E293B))),
-                  TextButton(
-                    onPressed: () => _showAddCourseDialog(),
-                    child: Text('+ Add Semester', style: TextStyle(color: colors.primary, fontWeight: FontWeight.bold)),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-
-              ...manager.semesters.map((semester) => Container(
-                margin: const EdgeInsets.only(bottom: 16),
+                margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
                 decoration: BoxDecoration(
                   color: Colors.white,
-                  borderRadius: BorderRadius.circular(24),
-                  border: Border.all(color: const Color(0xFFE2E8F0)),
+                  borderRadius: BorderRadius.circular(30),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.blue.withValues(alpha: 0.2),
+                      blurRadius: 10,
+                      offset: const Offset(0, 5),
+                    ),
+                  ],
                 ),
-                child: Theme(
-                  data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-                  child: ExpansionTile(
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-                    collapsedShape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-                    backgroundColor: Colors.transparent,
-                    leading: Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: colors.primary.withValues(alpha: 0.1),
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                      child: Text(semester.number.toString(), style: TextStyle(color: colors.primary, fontWeight: FontWeight.w900, fontSize: 18)),
+                child: TabBar(
+                  controller: _tabController,
+                  indicator: BoxDecoration(
+                    borderRadius: BorderRadius.circular(30),
+                    gradient: LinearGradient(
+                      colors: [Colors.blue.shade400, Colors.purple.shade400],
                     ),
-                    title: Text('Semester ${semester.number}', style: const TextStyle(fontWeight: FontWeight.w900, color: Color(0xFF1E293B))),
-                    subtitle: Text('SGPA: ${manager.getSGPA(semester.number).toStringAsFixed(2)}', style: TextStyle(color: Colors.blueGrey.shade500, fontWeight: FontWeight.w600)),
-                    trailing: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton(
-                          icon: const Icon(Icons.delete_outline_rounded, color: Color(0xFFEF4444), size: 22),
-                          onPressed: () => _confirmDeleteSemester(semester.number),
-                        ),
-                        const Icon(Icons.keyboard_arrow_down_rounded, color: Color(0xFF64748B)),
-                      ],
-                    ),
-                    children: [
-                      const Divider(height: 1, indent: 20, endIndent: 20, color: Color(0xFFF1F5F9)),
-                      ...semester.courses.map((course) => ListTile(
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 4),
-                        title: Text(course.name, style: const TextStyle(fontWeight: FontWeight.w700, color: Color(0xFF334155))),
-                        subtitle: Text('${course.creditHours} Credits • ${course.category.name.toUpperCase()}', style: TextStyle(color: Colors.blueGrey.shade400, fontSize: 12)),
-                        trailing: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFF1F5F9),
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          child: Text(course.letterGrade, style: const TextStyle(color: Color(0xFF1E293B), fontWeight: FontWeight.w900, fontSize: 14)),
-                        ),
-                      )),
-                      const SizedBox(height: 12),
-                    ],
+                  ),
+                  labelColor: Colors.white,
+                  unselectedLabelColor: Colors.grey.shade700,
+                  tabs: const [
+                    Tab(text: 'Professional'),
+                    Tab(text: 'Personal'),
+                  ],
+                ),
+              ),
+
+              // Content
+              Expanded(
+                child: FadeTransition(
+                  opacity: _fadeAnimation,
+                  child: SlideTransition(
+                    position: _slideAnimation,
+                    child: _isProfessional ? _buildProfessionalCV() : _buildPersonalCV(),
                   ),
                 ),
-              )),
+              ),
             ],
           ),
-        );
-      },
+        ),
+      ),
     );
   }
 
-  void _confirmDeleteSemester(int num) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-        title: Text('Remove Semester $num?', style: const TextStyle(fontWeight: FontWeight.w900)),
-        content: const Text('This will delete all subjects in this semester. This cannot be undone.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Keep it')),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFFEF4444),
-              foregroundColor: Colors.white,
-              elevation: 0,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            ),
-            onPressed: () {
-              manager.deleteSemester(num);
-              Navigator.pop(context);
+  Widget _buildAnimatedHeader() {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 300),
+      padding: const EdgeInsets.all(20),
+      child: Row(
+        children: [
+          // Animated Profile Image
+          GestureDetector(
+            onTap: () {
+              setState(() {
+                _isImageHovered = !_isImageHovered;
+              });
             },
-            child: const Text('Delete Semester'),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeInOut,
+              width: _isImageHovered ? 70 : 60,
+              height: _isImageHovered ? 70 : 60,
+              child: Stack(
+                children: [
+                  Container(
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      gradient: LinearGradient(
+                        colors: [Colors.blue.shade400, Colors.purple.shade400],
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.blue.withValues(alpha: 0.3),
+                          blurRadius: 15,
+                          offset: const Offset(0, 5),
+                        ),
+                      ],
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.all(3),
+                      child: Container(
+                        decoration: const BoxDecoration(
+                          shape: BoxShape.circle,
+                          image: DecorationImage(
+                            image: NetworkImage('https://via.placeholder.com/150'),
+                            fit: BoxFit.cover,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  if (_isImageHovered)
+                    Positioned(
+                      bottom: 0,
+                      right: 0,
+                      child: Container(
+                        padding: const EdgeInsets.all(4),
+                        decoration: const BoxDecoration(
+                          color: Colors.green,
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(
+                          Icons.check,
+                          color: Colors.white,
+                          size: 12,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(width: 15),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  professionalData['name'],
+                  style: const TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.blue.shade100,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    _isProfessional ? 'Professional Mode' : 'Personal Mode',
+                    style: TextStyle(
+                      color: Colors.blue.shade900,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          // Theme toggle (just for show)
+          IconButton(
+            icon: const Icon(Icons.color_lens),
+            onPressed: () {
+              // Could implement theme switching here
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('Theme switching coming soon!'),
+                  duration: Duration(seconds: 1),
+                ),
+              );
+            },
           ),
         ],
       ),
     );
   }
 
-  Widget _buildStatTile(String label, String value, IconData icon, Color color, ColorScheme colors) {
-    return Expanded(
-      child: Container(
-        padding: const EdgeInsets.all(24),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(28),
-          border: Border.all(color: const Color(0xFFE2E8F0)),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(color: color.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(14)),
-              child: Icon(icon, color: color, size: 24),
+  Widget _buildProfessionalCV() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Contact Info Cards
+          Container(
+            padding: const EdgeInsets.all(15),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(20),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.blue.withValues(alpha: 0.1),
+                  blurRadius: 10,
+                  offset: const Offset(0, 5),
+                ),
+              ],
             ),
-            const SizedBox(height: 20),
-            Text(value, style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w900, color: Color(0xFF0F172A), letterSpacing: -1)),
-            const SizedBox(height: 2),
-            Text(label, style: TextStyle(color: Colors.blueGrey.shade500, fontSize: 13, fontWeight: FontWeight.bold)),
-          ],
-        ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: [
+                _buildContactChip(Icons.email, professionalData['email']),
+                _buildContactChip(Icons.phone, professionalData['phone']),
+                _buildContactChip(Icons.location_on, professionalData['location']),
+              ],
+            ),
+          ),
+          const SizedBox(height: 20),
+
+          // Professional Summary with animation
+          _buildAnimatedSection(
+            'Professional Summary',
+            Icons.summarize,
+            _buildInfoCard(
+              child: Text(
+                professionalData['summary'],
+                style: const TextStyle(fontSize: 16, height: 1.5),
+              ),
+            ),
+          ),
+
+          // Work Experience with expandable details
+          _buildAnimatedSection(
+            'Work Experience',
+            Icons.work,
+            Column(
+              children: [
+                for (var exp in (professionalData['experience'] as List))
+                  _buildExperienceCard(exp)
+              ],
+            ),
+          ),
+
+          // Education
+          _buildAnimatedSection(
+            'Education',
+            Icons.school,
+            Column(
+              children: [
+                for (var edu in (professionalData['education'] as List))
+                  _buildInfoCard(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                edu['degree'],
+                                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                              ),
+                            ),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: Colors.green.shade100,
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Text(
+                                edu['grade'],
+                                style: TextStyle(color: Colors.green.shade800, fontSize: 12),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 5),
+                        Text(
+                          edu['institution'],
+                          style: const TextStyle(fontSize: 16, color: Colors.blue),
+                        ),
+                        Text(
+                          edu['year'],
+                          style: const TextStyle(fontSize: 14, color: Colors.grey),
+                        ),
+                      ],
+                    ),
+                  )
+              ],
+            ),
+          ),
+
+          // Skills with progress indicators
+          _buildAnimatedSection(
+            'Technical Skills',
+            Icons.code,
+            _buildInfoCard(
+              child: Column(
+                children: [
+                  for (var skill in (professionalData['skills'] as List))
+                    _buildSkillProgress(skill['name'], skill['level'])
+                ],
+              ),
+            ),
+          ),
+
+          // Languages with proficiency
+          _buildAnimatedSection(
+            'Languages',
+            Icons.language,
+            _buildInfoCard(
+              child: Column(
+                children: [
+                  for (var lang in (professionalData['languages'] as List))
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      child: Row(
+                        children: [
+                          Container(
+                            width: 40,
+                            height: 40,
+                            decoration: BoxDecoration(
+                              color: Colors.blue.shade50,
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Icon(Icons.language, color: Colors.blue.shade400),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  lang['name'],
+                                  style: const TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                LinearProgressIndicator(
+                                  value: lang['proficiency'],
+                                  backgroundColor: Colors.grey.shade200,
+                                  valueColor: AlwaysStoppedAnimation<Color>(
+                                    _getProficiencyColor(lang['proficiency']),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            lang['level'],
+                            style: TextStyle(
+                              color: Colors.grey.shade600,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+
+          // Certifications
+          _buildAnimatedSection(
+            'Certifications',
+            Icons.verified,
+            _buildInfoCard(
+              child: Column(
+                children: [
+                  for (var cert in (professionalData['certifications'] as List))
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 6),
+                      child: Row(
+                        children: [
+                          Icon(Icons.verified, color: Colors.green.shade600, size: 20),
+                          const SizedBox(width: 10),
+                          Text(cert),
+                        ],
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 80), // Space for FAB
+        ],
       ),
     );
   }
 
-  Widget _buildCoursesTab(ColorScheme colors) {
-    return ListenableBuilder(
-      listenable: manager,
-      builder: (context, _) {
-        if (manager.courses.isEmpty) {
-          return Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(32),
-                  decoration: BoxDecoration(
-                    color: Colors.blueGrey.shade100,
-                    shape: BoxShape.circle,
-                  ),
-                  child: Icon(Icons.auto_stories_rounded, size: 64, color: Colors.blueGrey.shade300),
+  Widget _buildPersonalCV() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Animated Profile Header
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 500),
+            curve: Curves.easeInOut,
+            width: double.infinity,
+            padding: const EdgeInsets.all(25),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [Colors.blue.shade400, Colors.purple.shade400],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(25),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.purple.withValues(alpha: 0.3),
+                  blurRadius: 20,
+                  offset: const Offset(0, 10),
                 ),
-                const SizedBox(height: 24),
-                Text('No courses added yet', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.blueGrey.shade400)),
               ],
             ),
-          );
-        }
-        return ListView.builder(
-          padding: const EdgeInsets.all(20),
-          itemCount: manager.courses.length,
-          itemBuilder: (context, index) {
-            final course = manager.courses[index];
-            return Container(
-              margin: const EdgeInsets.only(bottom: 16),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(24),
-                border: Border.all(color: const Color(0xFFE2E8F0)),
-              ),
-              child: ListTile(
-                contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                leading: Container(
-                  width: 64,
-                  height: 64,
+            child: Column(
+              children: [
+                // Animated avatar with glow effect
+                Container(
                   decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      colors: [colors.primary.withValues(alpha: 0.8), colors.primary],
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                    ),
+                    shape: BoxShape.circle,
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.white.withValues(alpha: 0.3),
+                        blurRadius: 20,
+                        spreadRadius: 5,
+                      ),
+                    ],
+                  ),
+                  child: const CircleAvatar(
+                    radius: 50,
+                    backgroundImage: NetworkImage('https://via.placeholder.com/150'),
+                  ),
+                ),
+                const SizedBox(height: 15),
+                Text(
+                  personalData['name'],
+                  style: const TextStyle(
+                    fontSize: 28,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white,
+                  ),
+                ),
+                const SizedBox(height: 5),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.2),
                     borderRadius: BorderRadius.circular(20),
                   ),
-                  child: Center(child: Text(course.letterGrade, style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w900))),
+                  child: Text(
+                    '${personalData['age']} years • ${personalData['nationality']}',
+                    style: const TextStyle(color: Colors.white, fontSize: 16),
+                  ),
                 ),
-                title: Text(course.name, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 17, color: Color(0xFF1E293B))),
-                subtitle: Text('Semester ${course.semesterNumber} • ${course.creditHours} Cr • ${course.rawMarks}%', style: TextStyle(color: Colors.blueGrey.shade500, fontWeight: FontWeight.w600)),
-                trailing: PopupMenuButton(
-                  icon: const Icon(Icons.more_vert_rounded, color: Color(0xFF64748B)),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                  itemBuilder: (context) => [
-                    const PopupMenuItem(value: 'edit', child: Row(children: [Icon(Icons.edit_note_rounded, size: 22), SizedBox(width: 12), Text('Modify')])),
-                    const PopupMenuItem(value: 'delete', child: Row(children: [Icon(Icons.delete_sweep_rounded, color: Color(0xFFEF4444), size: 22), SizedBox(width: 12), Text('Remove', style: TextStyle(color: Color(0xFFEF4444), fontWeight: FontWeight.bold))])),
+              ],
+            ),
+          ),
+          const SizedBox(height: 20),
+
+          // Personality Traits as chips
+          _buildAnimatedSection(
+            'Personality',
+            Icons.psychology,
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (var trait in (personalData['personality'] as List))
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [Colors.blue.shade100, Colors.purple.shade100],
+                      ),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Text(
+                      trait,
+                      style: TextStyle(
+                        color: Colors.blue.shade900,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+
+          // Social Links
+          _buildAnimatedSection(
+            'Connect With Me',
+            Icons.share,
+            SizedBox(
+              height: 80,
+              child: ListView.builder(
+                scrollDirection: Axis.horizontal,
+                itemCount: (personalData['social'] as List).length,
+                itemBuilder: (context, index) {
+                  final social = personalData['social'][index];
+                  return _buildSocialButton(social);
+                },
+              ),
+            ),
+          ),
+
+          // Hobbies with bullet points and animations
+          _buildAnimatedSection(
+            'Hobbies',
+            Icons.favorite,
+            _buildInfoCard(
+              child: Column(
+                children: [
+                  for (var hobby in (personalData['hobbies'] as List))
+                    TweenAnimationBuilder(
+                      duration: Duration(milliseconds: 500 + ((personalData['hobbies'] as List).indexOf(hobby) * 100)),
+                      tween: Tween<double>(begin: 0, end: 1),
+                      builder: (context, double value, child) {
+                        return Opacity(
+                          opacity: value,
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 8),
+                            child: Row(
+                              children: [
+                                Container(
+                                  width: 8,
+                                  height: 8,
+                                  decoration: const BoxDecoration(
+                                    color: Colors.blue,
+                                    shape: BoxShape.circle,
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Container(
+                                  padding: const EdgeInsets.all(8),
+                                  decoration: BoxDecoration(
+                                    color: Colors.blue.shade50,
+                                    borderRadius: BorderRadius.circular(10),
+                                  ),
+                                  child: Icon(hobby['icon'], size: 20, color: Colors.blue),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        hobby['name'],
+                                        style: const TextStyle(
+                                          fontSize: 16,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                      Text(
+                                        hobby['description'],
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          color: Colors.grey.shade600,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                ],
+              ),
+            ),
+          ),
+
+          // Interests with gradient cards
+          _buildAnimatedSection(
+            'Interests',
+            Icons.stars,
+            Column(
+              children: [
+                for (var interest in (personalData['interests'] as List))
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: _buildGradientInterestCard(interest),
+                  ),
+              ],
+            ),
+          ),
+
+          // Favorites Bullet List
+          _buildAnimatedSection(
+            'Favorites',
+            Icons.favorite,
+            _buildInfoCard(
+              child: Column(
+                children: [
+                  if (personalData['favorites'] != null) ...[
+                    _buildFavoriteBulletItem('Food', personalData['favorites']['food'], Icons.fastfood, Colors.orange),
+                    _buildFavoriteBulletItem('Color', personalData['favorites']['color'], Icons.color_lens, Colors.purple),
+                    _buildFavoriteBulletItem('Movie', personalData['favorites']['movie'], Icons.movie, Colors.red),
+                    _buildFavoriteBulletItem('Book', personalData['favorites']['book'], Icons.book, Colors.blue),
+                    _buildFavoriteBulletItem('Artist', personalData['favorites']['artist'], Icons.music_note, Colors.green),
                   ],
-                  onSelected: (val) {
-                    if (val == 'edit') _showEditCourseDialog(index, course);
-                    if (val == 'delete') _confirmDeleteCourse(index, course.name);
-                  },
+                ],
+              ),
+            ),
+          ),
+
+          // Quote with animation
+          _buildAnimatedSection(
+            'Favorite Quote',
+            Icons.format_quote,
+            _buildQuoteCard(),
+          ),
+          const SizedBox(height: 80),
+        ],
+      ),
+    );
+  }
+
+  // Enhanced Helper Widgets
+  Widget _buildAnimatedSection(String title, IconData icon, Widget child) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.blue.shade100,
+                  borderRadius: BorderRadius.circular(10),
                 ),
+                child: Icon(icon, color: Colors.blue.shade700, size: 20),
+              ),
+              const SizedBox(width: 10),
+              Text(
+                title,
+                style: const TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+        ),
+        TweenAnimationBuilder(
+          duration: const Duration(milliseconds: 600),
+          tween: Tween<double>(begin: 0, end: 1),
+          builder: (context, double value, child) {
+            return Opacity(
+              opacity: value,
+              child: Transform.translate(
+                offset: Offset(0, 20 * (1 - value)),
+                child: child,
               ),
             );
           },
-        );
-      },
+          child: child,
+        ),
+      ],
     );
   }
 
-  void _confirmDeleteCourse(int index, String name) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-        title: const Text('Remove Subject?', style: TextStyle(fontWeight: FontWeight.w900)),
-        content: Text('Delete "$name"? This action is final.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFFEF4444),
-              foregroundColor: Colors.white,
-              elevation: 0,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+  Widget _buildContactChip(IconData icon, String text) {
+    return Tooltip(
+      message: text,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: Colors.grey.shade100,
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Row(
+          children: [
+            Icon(icon, size: 16, color: Colors.blue),
+            const SizedBox(width: 4),
+            Text(
+              text.length > 15 ? '${text.substring(0, 12)}...' : text,
+              style: const TextStyle(fontSize: 12),
             ),
-            onPressed: () {
-              manager.deleteCourse(index);
-              Navigator.pop(context);
-            },
-            child: const Text('Remove Subject'),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildExperienceCard(Map<String, dynamic> exp) {
+    return _buildInfoCard(
+      child: ExpansionTile(
+        leading: Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: Colors.blue.shade50,
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Icon(Icons.business_center, color: Colors.blue.shade400),
+        ),
+        title: Text(
+          exp['position'],
+          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+        ),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              exp['company'],
+              style: const TextStyle(fontSize: 16, color: Colors.blue),
+            ),
+            Text(
+              exp['period'],
+              style: const TextStyle(fontSize: 14, color: Colors.grey),
+            ),
+          ],
+        ),
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(exp['description']),
+                const SizedBox(height: 10),
+                const Text(
+                  'Key Achievements:',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 5),
+                for (var achievement in (exp['achievements'] as List))
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 2),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.check_circle, color: Colors.green, size: 16),
+                        const SizedBox(width: 8),
+                        Expanded(child: Text(achievement)),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildPredictorTab(ColorScheme colors) {
-    return ListenableBuilder(
-      listenable: manager,
-      builder: (context, _) {
-        return SingleChildScrollView(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            children: [
-              _buildPredictorCard(
-                title: 'Target GPA Calculator',
-                icon: Icons.track_changes_rounded,
-                color: const Color(0xFF0EA5E9), // Cyan
-                colors: colors,
-                child: Column(
-                  children: [
-                    _buildPredictorField('Required CGPA Goal', (v) => manager.targetCGPA = double.tryParse(v) ?? 0, 'e.g. 3.8'),
-                    const SizedBox(height: 16),
-                    _buildPredictorField('Remaining Credits', (v) => manager.remainingCredits = int.tryParse(v) ?? 0, 'e.g. 15'),
-                    const SizedBox(height: 32),
-                    FutureBuilder<double>(
-                      future: Future.value(manager.predictionEngine.calculateRequiredGPA(
-                        currentCGPA: manager.currentCGPA,
-                        completedCredits: manager.courses.fold(0.0, (sum, c) => sum + c.creditHours),
-                        remainingCredits: manager.remainingCredits.toDouble(),
-                        targetCGPA: manager.targetCGPA,
-                      )),
-                      builder: (context, snapshot) {
-                        final req = snapshot.data ?? 0.0;
-                        final isPossible = req <= 4.0;
-                        return _buildResultBox('Required SGPA Next', req.toStringAsFixed(2), isPossible ? const Color(0xFF10B981) : const Color(0xFFEF4444));
-                      },
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _buildPredictorCard({required String title, required IconData icon, required Color color, required ColorScheme colors, required Widget child}) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 24),
-      padding: const EdgeInsets.all(28),
-      decoration: BoxDecoration(
-        color: Colors.white, 
-        borderRadius: BorderRadius.circular(32), 
-        border: Border.all(color: const Color(0xFFE2E8F0)),
-      ),
+  Widget _buildSkillProgress(String skill, double level) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Container(
-                padding: const EdgeInsets.all(10), 
-                decoration: BoxDecoration(color: color.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(14)), 
-                child: Icon(icon, color: color, size: 24),
-              ),
-              const SizedBox(width: 16),
-              Text(title, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900, color: Color(0xFF0F172A))),
+              Text(skill, style: const TextStyle(fontWeight: FontWeight.w500)),
+              Text('${(level * 100).toInt()}%'),
             ],
           ),
-          const SizedBox(height: 32),
-          child,
+          const SizedBox(height: 4),
+          LinearProgressIndicator(
+            value: level,
+            backgroundColor: Colors.grey.shade200,
+            valueColor: AlwaysStoppedAnimation<Color>(
+              level >= 0.8 ? Colors.green : level >= 0.6 ? Colors.orange : Colors.red,
+            ),
+            minHeight: 8,
+            borderRadius: BorderRadius.circular(4),
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildPredictorField(String label, Function(String) onChanged, String hint) {
-    return TextField(
-      decoration: InputDecoration(
-        labelText: label, 
-        labelStyle: const TextStyle(fontWeight: FontWeight.w700, color: Color(0xFF64748B)),
-        hintText: hint, 
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: const BorderSide(color: Color(0xFFCBD5E1))),
-        enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: const BorderSide(color: Color(0xFFE2E8F0))),
-        filled: true,
-        fillColor: const Color(0xFFF8FAFC),
+  Widget _buildGradientInterestCard(Map<String, dynamic> interest) {
+    return Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            (interest['color'] as Color).withValues(alpha: 0.1),
+            (interest['color'] as Color).withValues(alpha: 0.05),
+          ],
+        ),
+        borderRadius: BorderRadius.circular(15),
+        border: Border.all(
+          color: (interest['color'] as Color).withValues(alpha: 0.3),
+        ),
       ),
-      keyboardType: TextInputType.number,
-      onChanged: (v) { onChanged(v); setState(() {}); },
+      child: ListTile(
+        leading: Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: (interest['color'] as Color).withValues(alpha: 0.2),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Icon(interest['icon'], color: interest['color']),
+        ),
+        title: Text(
+          interest['name'],
+          style: const TextStyle(fontWeight: FontWeight.bold),
+        ),
+        subtitle: Text(interest['description']),
+        trailing: Icon(Icons.arrow_forward_ios, size: 16, color: interest['color']),
+      ),
     );
   }
 
-  Widget _buildResultBox(String label, String value, Color color) {
+  Widget _buildFavoriteBulletItem(String label, String value, IconData icon, Color color) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(icon, color: color, size: 18),
+          ),
+          const SizedBox(width: 15),
+          Expanded(
+            child: RichText(
+              text: TextSpan(
+                style: const TextStyle(color: Colors.black, fontSize: 16, fontFamily: 'Poppins'),
+                children: [
+                  TextSpan(text: '$label: ', style: const TextStyle(fontWeight: FontWeight.bold)),
+                  TextSpan(text: value),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildQuoteCard() {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(28),
+      padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.08), 
-        borderRadius: BorderRadius.circular(28), 
-        border: Border.all(color: color.withValues(alpha: 0.2), width: 2),
+        gradient: LinearGradient(
+          colors: [Colors.blue.shade50, Colors.purple.shade50],
+        ),
+        borderRadius: BorderRadius.circular(15),
+        border: Border.all(color: Colors.blue.shade200),
       ),
       child: Column(
         children: [
-          Text(label, style: TextStyle(color: color, fontWeight: FontWeight.w800, fontSize: 15, letterSpacing: 1)),
-          const SizedBox(height: 12),
-          Text(value, style: TextStyle(color: color, fontSize: 56, fontWeight: FontWeight.w900, letterSpacing: -2)),
+          Icon(Icons.format_quote, size: 40, color: Colors.blue.shade200),
+          Text(
+            '"${personalData['quote']}"',
+            style: const TextStyle(
+              fontSize: 18,
+              fontStyle: FontStyle.italic,
+            ),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 10),
+          Text(
+            '- ${personalData['name']}',
+            style: TextStyle(
+              color: Colors.grey.shade600,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildAnalyticsTab(ColorScheme colors) {
-    return ListenableBuilder(
-      listenable: manager,
-      builder: (context, _) {
-        return SingleChildScrollView(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(28),
-                decoration: BoxDecoration(
-                  gradient: const LinearGradient(colors: [Color(0xFF4F46E5), Color(0xFF0EA5E9)]), // Indigo to Cyan
-                  borderRadius: BorderRadius.circular(32),
-                  boxShadow: [
-                    BoxShadow(color: const Color(0xFF4F46E5).withValues(alpha: 0.25), blurRadius: 20, offset: const Offset(0, 8)),
-                  ],
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    const Text('GROWTH RATE', style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w900, letterSpacing: 2)),
-                    Text('${(manager.analyticsEngine.calculateGPAGrowthRate(manager.courses) * 100).toStringAsFixed(1)}%', 
-                      style: const TextStyle(color: Colors.white, fontSize: 36, fontWeight: FontWeight.w900, letterSpacing: -1)),
-                  ],
-                ),
+  Widget _buildSocialButton(Map<String, dynamic> social) {
+    return Padding(
+      padding: const EdgeInsets.only(right: 10),
+      child: Material(
+        color: (social['color'] as Color).withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(15),
+        child: InkWell(
+          onTap: () {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('Opening ${social['link']}'),
+                duration: const Duration(seconds: 1),
               ),
-              const SizedBox(height: 32),
-              const Align(alignment: Alignment.centerLeft, child: Text('Performance Heatmap', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900, color: Color(0xFF1E293B)))),
-              const SizedBox(height: 16),
-              ...manager.courses.map((course) {
-                final score = manager.analyticsEngine.calculatePerformanceHeatmapScore(course);
-                final scoreColor = Color.lerp(const Color(0xFFEF4444), const Color(0xFF10B981), score.clamp(0, 1))!;
-                return Container(
-                  margin: const EdgeInsets.only(bottom: 12),
-                  padding: const EdgeInsets.all(20),
-                  decoration: BoxDecoration(
-                    color: Colors.white, 
-                    borderRadius: BorderRadius.circular(24), 
-                    border: Border.all(color: const Color(0xFFE2E8F0)),
-                  ),
-                  child: Row(
-                    children: [
-                      Container(width: 8, height: 48, decoration: BoxDecoration(color: scoreColor, borderRadius: BorderRadius.circular(100))),
-                      const SizedBox(width: 20),
-                      Expanded(child: Text(course.name, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: Color(0xFF334155)))),
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.end,
-                        children: [
-                          Text(course.gradePoint.toStringAsFixed(2), style: TextStyle(color: scoreColor, fontWeight: FontWeight.w900, fontSize: 20)),
-                          Text(course.letterGrade, style: TextStyle(color: Colors.blueGrey.shade400, fontSize: 12, fontWeight: FontWeight.bold)),
-                        ],
-                      ),
-                    ],
-                  ),
-                );
-              }),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  String _getGPAFeedback(double gpa) {
-    if (gpa >= 3.8) return "Academic Excellence! 🚀";
-    if (gpa >= 3.5) return "Brilliant Performance! ✨";
-    if (gpa >= 3.0) return "Keep it up! 👍";
-    if (gpa >= 2.0) return "Room for improvement 📚";
-    return "Focus and try harder 💪";
-  }
-
-  // --- Dialogs ---
-  void _showAddCourseDialog() {
-    final nameController = TextEditingController();
-    final creditsController = TextEditingController(text: '3');
-    final marksController = TextEditingController();
-    int semesterNumber = manager.semesters.isEmpty ? 1 : manager.semesters.last.number;
-
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => Container(
-        decoration: const BoxDecoration(color: Colors.white, borderRadius: BorderRadius.vertical(top: Radius.circular(36))),
-        padding: EdgeInsets.fromLTRB(28, 20, 28, MediaQuery.of(context).viewInsets.bottom + 32),
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Center(child: Container(width: 48, height: 6, decoration: BoxDecoration(color: const Color(0xFFE2E8F0), borderRadius: BorderRadius.circular(100)))),
-              const SizedBox(height: 32),
-              const Text('Add New Subject', style: TextStyle(fontSize: 26, fontWeight: FontWeight.w900, color: Color(0xFF0F172A), letterSpacing: -0.5)),
-              const SizedBox(height: 32),
-              TextField(
-                controller: nameController, 
-                decoration: InputDecoration(
-                  labelText: 'Subject Name', 
-                  prefixIcon: const Icon(Icons.book_rounded, size: 22), 
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(18)),
-                  filled: true,
-                  fillColor: const Color(0xFFF8FAFC),
-                ),
-              ),
-              const SizedBox(height: 16),
-              Row(
-                children: [
-                  Expanded(child: TextField(controller: creditsController, decoration: InputDecoration(labelText: 'Credits', prefixIcon: const Icon(Icons.bolt_rounded, size: 22), border: OutlineInputBorder(borderRadius: BorderRadius.circular(18)), filled: true, fillColor: const Color(0xFFF8FAFC)), keyboardType: TextInputType.number)),
-                  const SizedBox(width: 16),
-                  Expanded(child: TextField(controller: marksController, decoration: InputDecoration(labelText: 'Marks %', prefixIcon: const Icon(Icons.percent_rounded, size: 22), border: OutlineInputBorder(borderRadius: BorderRadius.circular(18)), filled: true, fillColor: const Color(0xFFF8FAFC)), keyboardType: TextInputType.number)),
-                ],
-              ),
-              const SizedBox(height: 16),
-              DropdownButtonFormField<int>(
-                initialValue: semesterNumber,
-                decoration: InputDecoration(labelText: 'Semester', prefixIcon: const Icon(Icons.calendar_month_rounded, size: 22), border: OutlineInputBorder(borderRadius: BorderRadius.circular(18)), filled: true, fillColor: const Color(0xFFF8FAFC)),
-                items: List.generate(8, (i) => i + 1).map((n) => DropdownMenuItem(value: n, child: Text('Semester $n'))).toList(),
-                onChanged: (v) => semesterNumber = v!,
-              ),
-              const SizedBox(height: 36),
-              SizedBox(
-                width: double.infinity,
-                height: 64,
-                child: ElevatedButton(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF3B82F6), 
-                    foregroundColor: Colors.white, 
-                    elevation: 0,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                  ),
-                  onPressed: () {
-                    if (nameController.text.isEmpty) return;
-                    manager.addCourse(Course(
-                      name: nameController.text,
-                      creditHours: double.tryParse(creditsController.text) ?? 3,
-                      rawMarks: double.tryParse(marksController.text) ?? 0,
-                      category: CourseCategory.core,
-                      semesterNumber: semesterNumber,
-                    ));
-                    Navigator.pop(context);
-                  },
-                  child: const Text('Add to Records', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
-                ),
-              ),
-            ],
+            );
+          },
+          borderRadius: BorderRadius.circular(15),
+          child: SizedBox(
+            width: 60,
+            height: 60,
+            child: Icon(
+              social['icon'],
+              color: social['color'],
+              size: 30,
+            ),
           ),
         ),
       ),
     );
   }
 
-  void _showEditCourseDialog(int index, Course course) {
-    final nameController = TextEditingController(text: course.name);
-    final creditsController = TextEditingController(text: course.creditHours.toString());
-    final marksController = TextEditingController(text: course.rawMarks.toString());
-    int semesterNumber = course.semesterNumber;
-
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => Container(
-        decoration: const BoxDecoration(color: Colors.white, borderRadius: BorderRadius.vertical(top: Radius.circular(36))),
-        padding: EdgeInsets.fromLTRB(28, 20, 28, MediaQuery.of(context).viewInsets.bottom + 32),
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Center(child: Container(width: 48, height: 6, decoration: BoxDecoration(color: const Color(0xFFE2E8F0), borderRadius: BorderRadius.circular(100)))),
-              const SizedBox(height: 32),
-              const Text('Update Subject', style: TextStyle(fontSize: 26, fontWeight: FontWeight.w900, color: Color(0xFF0F172A))),
-              const SizedBox(height: 32),
-              TextField(controller: nameController, decoration: InputDecoration(labelText: 'Subject Name', border: OutlineInputBorder(borderRadius: BorderRadius.circular(18)), filled: true, fillColor: const Color(0xFFF8FAFC))),
-              const SizedBox(height: 16),
-              TextField(controller: creditsController, decoration: InputDecoration(labelText: 'Credits', border: OutlineInputBorder(borderRadius: BorderRadius.circular(18)), filled: true, fillColor: const Color(0xFFF8FAFC)), keyboardType: TextInputType.number),
-              const SizedBox(height: 16),
-              TextField(controller: marksController, decoration: InputDecoration(labelText: 'Marks %', border: OutlineInputBorder(borderRadius: BorderRadius.circular(18)), filled: true, fillColor: const Color(0xFFF8FAFC)), keyboardType: TextInputType.number),
-              const SizedBox(height: 36),
-              SizedBox(
-                width: double.infinity,
-                height: 64,
-                child: ElevatedButton(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF3B82F6), 
-                    foregroundColor: Colors.white, 
-                    elevation: 0,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                  ),
-                  onPressed: () {
-                    manager.updateCourse(index, Course(
-                      name: nameController.text,
-                      creditHours: double.tryParse(creditsController.text) ?? 3,
-                      rawMarks: double.tryParse(marksController.text) ?? 0,
-                      category: course.category,
-                      semesterNumber: semesterNumber,
-                    ));
-                    Navigator.pop(context);
-                  },
-                  child: const Text('Save Changes', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
-                ),
-              ),
-            ],
-          ),
-        ),
+  Widget _buildInfoCard({required Widget child}) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 15),
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: child,
       ),
     );
+  }
+
+  Color _getProficiencyColor(double proficiency) {
+    if (proficiency >= 0.8) return Colors.green;
+    if (proficiency >= 0.6) return Colors.orange;
+    return Colors.red;
   }
 }
